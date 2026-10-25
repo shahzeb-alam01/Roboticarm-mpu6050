@@ -55,12 +55,17 @@ const float CLAW_MIN = 40, CLAW_MAX = 160;
 // Serial output rate
 unsigned long lastPrint = 0;
 const unsigned long PRINT_INTERVAL = 200; // ms
+const unsigned long CLAW_COMMAND_INTERVAL = 80; // ms
 
 // Previous end-effector position (for delta/speed)
 float prevX = NAN, prevY = NAN, prevZ = NAN;
+unsigned long lastPositionTime = 0;
+unsigned long lastClawCommand = 0;
+unsigned long lastSensorError = 0;
 
 String currentState = "Idle";
 
+bool initializeMPU();
 bool readMPU();
 float smoothMove(float current, float target, float alpha);
 String detectStateFromTargets();
@@ -70,10 +75,9 @@ void setup() {
   Wire.begin(21, 22); // SDA, SCL default ESP32 pins
 
   // Init MPU6050
-  Wire.beginTransmission(MPU_addr);
-  Wire.write(0x6B);  // PWR_MGMT_1 register
-  Wire.write(0);     // wake up MPU6050
-  Wire.endTransmission(true);
+  if (!initializeMPU()) {
+    Serial.println("ERROR: MPU6050 was not detected. Check wiring and address 0x68.");
+  }
 
   // Attach servos
   Spin.attach(SPIN_PIN);
@@ -93,7 +97,10 @@ void setup() {
 void loop() {
   // Read accelerometer + gyro
   if (!readMPU()) {
-    // if read fails, skip this loop
+    if (millis() - lastSensorError >= 1000) {
+      Serial.println("ERROR: MPU6050 read failed; servos are holding their last targets.");
+      lastSensorError = millis();
+    }
     delay(10);
     return;
   }
@@ -138,12 +145,14 @@ void loop() {
     targetElbow = mappedElbow;
 
     // Claw control from GyZ threshold (rotation)
-    if (GyZ < -20000) {
+    if (GyZ < -20000 && millis() - lastClawCommand >= CLAW_COMMAND_INTERVAL) {
       targetClaw = constrain(targetClaw + 1.0, CLAW_MIN, CLAW_MAX);
       currentState = "Claw Closing";
-    } else if (GyZ > 20000) {
+      lastClawCommand = millis();
+    } else if (GyZ > 20000 && millis() - lastClawCommand >= CLAW_COMMAND_INTERVAL) {
       targetClaw = constrain(targetClaw - 1.0, CLAW_MIN, CLAW_MAX);
       currentState = "Claw Opening";
+      lastClawCommand = millis();
     }
   }
 
@@ -185,11 +194,15 @@ void loop() {
   // Calculate movement delta and direction
   float dx = 0, dy = 0, dz = 0;
   float speed = 0;
+  unsigned long now = millis();
   if (!isnan(prevX)) {
     dx = effX - prevX;
     dy = effY - prevY;
     dz = effZ - prevZ;
-    speed = sqrt(dx*dx + dy*dy + dz*dz) / (PRINT_INTERVAL / 1000.0); // cm/s approx
+    float elapsedSeconds = (now - lastPositionTime) / 1000.0f;
+    if (elapsedSeconds > 0.0f) {
+      speed = sqrt(dx*dx + dy*dy + dz*dz) / elapsedSeconds;
+    }
   }
   // Direction unit vector
   float mag = sqrt(dx*dx + dy*dy + dz*dz);
@@ -215,16 +228,35 @@ void loop() {
     Serial.print(" | dir: ["); Serial.print(ux,2); Serial.print(","); Serial.print(uy,2); Serial.print(","); Serial.print(uz,2);
     Serial.print("] | speed(cm/s): "); Serial.println(speed,2);
 
-    lastPrint = millis();
+    lastPrint = now;
     // update prev positions
     prevX = effX; prevY = effY; prevZ = effZ;
+    lastPositionTime = now;
   }
 
   // small loop delay
   delay(10);
 }
 
-// Read MPU6050 14 bytes
+bool initializeMPU() {
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x6B);  // PWR_MGMT_1
+  Wire.write(0);     // wake up the sensor
+  if (Wire.endTransmission(true) != 0) {
+    return false;
+  }
+
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x75);  // WHO_AM_I
+  if (Wire.endTransmission(false) != 0 ||
+      Wire.requestFrom(MPU_addr, static_cast<size_t>(1), true) != 1) {
+    return false;
+  }
+
+  uint8_t deviceId = Wire.read();
+  return deviceId == 0x68 || deviceId == 0x69;
+}
+
 bool readMPU() {
   Wire.beginTransmission(MPU_addr);
   Wire.write(0x3B);

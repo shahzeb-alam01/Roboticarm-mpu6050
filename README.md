@@ -67,6 +67,8 @@ servo-supply ground and ESP32 ground must be common.
 8. Click **Build**.
 9. Click **Upload**.
 10. Open the Serial Monitor at **115200 baud**.
+11. Confirm that the startup output does not report an MPU6050 detection or
+    read error before connecting the mechanical load.
 
 The expected startup message is:
 
@@ -87,6 +89,8 @@ Robotic arm ready. Sending coordinates and state...
 9. Servo targets are approached gradually using smoothing factors.
 10. Forward kinematics calculates the estimated X, Y, and Z position.
 11. Position and movement data are printed every 200 ms.
+12. MPU6050 startup identification and periodic I2C read checks prevent the
+    controller from treating missing sensor data as valid movement.
 
 ## Calibration
 
@@ -145,6 +149,9 @@ power distribution if necessary.
 - Confirm that the module is using address `0x68`.
 - Modules with AD0 pulled high use address `0x69`; change `MPU_addr` if needed.
 - Check that the I2C pull-up resistors are suitable for 3.3 V operation.
+- At startup, the firmware checks `WHO_AM_I` and accepts sensor IDs `0x68`
+  and `0x69`. A detection error means the wiring, address, or module power
+  must be corrected before testing the arm.
 
 ### Servos move erratically
 
@@ -154,6 +161,8 @@ power distribution if necessary.
 - Increase `ACC_DEADZONE`.
 - Reduce `ROLL_SENS` or `PITCH_SENS`.
 - Check that the MPU6050 is mechanically fixed and not vibrating.
+- The claw command is rate-limited so a sustained gyro rotation does not
+  change the claw target on every fast control-loop iteration.
 
 ### The arm direction is reversed
 
